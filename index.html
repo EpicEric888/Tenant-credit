@@ -3228,25 +3228,41 @@ function applyFilters() {
       if (ags.length) ags.forEach(a => { const r = rat[a]; R.push([a, {v: r[2], s: ST.bold}, r[3] || '', dShort(r[4]), r[7] ? {v: 'Link', link: r[7]} : '', r[5] || '']); });
       else R.push([{v: 'No public rating found', s: ST.note}]);
       R.push([]);
-      let notesAnn = false, notesOther = false;
-      const block = (title, g) => {
-        if (!g.ends.length) return;
-        R.push([{v: title, s: ST.section}, ...Array(g.ends.length + 1).fill({v: '', s: ST.section})]);
-        R.push([{v: ccy ? `${ccy} m` : '', s: ST.head}, {v: 'Basis', s: ST.head}, ...g.ends.map(e => ({v: g.label[e], s: ST.headR}))]);
-        R.push([{v: '', s: ST.note}, {v: '', s: ST.note}, ...g.ends.map(e => ({v: dShort(e), s: ST.note}))]);
-        g.lines.forEach((ln, i) => {
-          const d = DEF[ln.metric], st = fmtStyle(d.unit);
-          R.push([{v: d.label + (ln.vals.some(v => v && v.ann) ? ' †' : ''), s: ['revenue', 'ebitda', 'net_debt', 'net_leverage'].includes(ln.metric) ? ST.bold : null}, {v: ln.basis, s: ST.note},
-            ...ln.vals.map(v => { if (!v) return null; figures++; if (v.ann) notesAnn = true; if (v.other) notesOther = true; return {v: v.v, s: st}; })]);
+      // metrics table laid out like Company detail on the dashboard: metrics down, every period across
+      const crow = ROWS.filter(r => r.co === c.id && DEF[r.metric]);
+      const keys = [...new Map(crow.map(r => [r.b.key, r.b])).entries()].sort((a, b) => a[0].localeCompare(b[0]));
+      const ends = {}; crow.forEach(r => { if (!ends[r.b.key] || r.end > ends[r.b.key]) ends[r.b.key] = r.end; });
+      const mets = DEFS.map(d => d[0]).filter(m => crow.some(r => r.metric === m));
+      let anyAnn = false, anyNd = false;
+      if (keys.length) {
+        const firstI = keys.findIndex(k => k[0][0] !== 'A');
+        R.push([{v: 'Metrics', s: ST.section}, ...Array(keys.length + 1).fill({v: '', s: ST.section})]);
+        R.push([{v: '', s: ST.note}, {v: '', s: ST.note}, ...keys.map((k, i) => ({v: i === 0 && k[0][0] === 'A' ? 'Annual' : i === firstI ? 'Interim' : '', s: ST.note}))]);
+        R.push([{v: 'Metric', s: ST.head}, {v: 'Unit', s: ST.head}, ...keys.map(k => ({v: k[1].label, s: ST.headR}))]);
+        R.push([{v: '', s: ST.note}, {v: '', s: ST.note}, ...keys.map(k => ({v: dShort(ends[k[0]]), s: ST.note}))]);
+        let lastCat = null;
+        mets.forEach(m => {
+          const d = DEF[m], st = fmtStyle(d.unit);
+          if (d.cat !== lastCat) { R.push([{v: CATS[d.cat] || d.cat, s: ST.bold}]); lastCat = d.cat; }
+          const cells = keys.map(([k]) => {
+            const pk = pick(crow.filter(r => r.metric === m && r.b.key === k), state.prefer);
+            if (!pk) return null;
+            figures++;
+            if (pk.value == null) { anyNd = true; return {v: 'n.d.', s: ST.note}; }
+            if (pk.annualized) anyAnn = true;
+            return {v: pk.value, s: st};
+          });
+          R.push([{v: d.label + (m === 'net_leverage_calc' && anyAnn ? ' †' : ''), s: ['revenue', 'ebitda', 'net_debt', 'net_leverage'].includes(m) ? ST.bold : null}, {v: unitLabel(m, c.id), s: ST.note}, ...cells]);
         });
         R.push([]);
-      };
-      block('Annual financials', grid(c.id, true, 5));
-      block('Interim financials', grid(c.id, false, 6));
-      if (notesAnn) R.push([{v: '† Some interim leverage figures use annualized EBITDA (latest quarter x 4).', s: ST.note}]);
-      if (notesOther) R.push([{v: 'Where a period lacks the row basis, the figure on another basis is shown; see the Data tab for every figure and its source.', s: ST.note}]);
+        R.push([{v: `Where a company reports both, ${state.prefer === 'reported' ? 'reported' : 'adjusted'} figures are shown (same as the basis toggle on the dashboard). n.d. means the filing did not disclose it; blank means no figure stored.`, s: ST.note}]);
+        if (anyAnn) R.push([{v: '† Net leverage (calc.) on annualized EBITDA: latest quarter x 4, used where twelve months of quarterly EBITDA are not available.', s: ST.note}]);
+        R.push([{v: 'Every figure with its basis and source link is in the Data tab.', s: ST.note}]);
+      } else {
+        R.push([{v: 'No financial figures stored for this tenant yet.', s: ST.note}]);
+      }
       R.push([{v: 'Ratings marked (unverified) were found by automated search and not yet checked against the agency.', s: ST.note}]);
-      return {name: tabOf[c.id], rows: R, cols: [26, 13, 14, 13, 13, 13, 13, 13], grid: false, tab: 'FF2F7FC1'};
+      return {name: tabOf[c.id], rows: R, cols: [26, 14, ...Array(Math.max(6, keys.length)).fill(11)], freeze: {col: 1}, grid: false, tab: 'FF2F7FC1'};
     });
 
     // cover
