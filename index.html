@@ -3011,52 +3011,224 @@ function applyFilters() {
     btn.hidden = false;
   }
   let lib = null;
-  const loadXlsx = () => lib || (lib = new Promise((ok, bad) => {
-    if (window.XLSX) return ok(window.XLSX);
+  const loadZip = () => lib || (lib = new Promise((ok, bad) => {
+    if (window.JSZip) return ok(window.JSZip);
     const t = document.createElement('script');
-    t.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
-    t.onload = () => window.XLSX ? ok(window.XLSX) : bad(new Error('Excel library did not load'));
+    t.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+    t.onload = () => window.JSZip ? ok(window.JSZip) : bad(new Error('Excel library did not load'));
     t.onerror = () => { lib = null; bad(new Error('Excel library did not load')); };
     document.head.appendChild(t);
   }));
   const say = t => { msg.textContent = t; };
+
+  /* --- tiny .xlsx writer: sheets of cells with a fixed style palette --- */
+  const ST = {title: 1, sub: 2, head: 3, bold: 4, link: 5, m: 6, x: 7, pct: 8, note: 9, section: 10, text: 11, headR: 12, boldM: 13, band: 14};
+  const STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<numFmts count="3"><numFmt numFmtId="164" formatCode="#,##0;(#,##0);&quot;-&quot;"/><numFmt numFmtId="165" formatCode="0.00&quot;x&quot;"/><numFmt numFmtId="166" formatCode="0.0&quot;%&quot;"/></numFmts>
+<fonts count="7"><font><sz val="10"/><name val="Arial"/></font><font><b/><sz val="18"/><color rgb="FF1F3B57"/><name val="Arial"/></font><font><sz val="10"/><color rgb="FF6B7280"/><name val="Arial"/></font><font><b/><sz val="10"/><color rgb="FFFFFFFF"/><name val="Arial"/></font><font><b/><sz val="10"/><name val="Arial"/></font><font><u/><sz val="10"/><color rgb="FF2F7FC1"/><name val="Arial"/></font><font><b/><sz val="12"/><color rgb="FF1F3B57"/><name val="Arial"/></font></fonts>
+<fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF1F3B57"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF2F5F8"/><bgColor indexed="64"/></patternFill></fill></fills>
+<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left/><right/><top/><bottom style="thin"><color rgb="FF1F3B57"/></bottom><diagonal/></border></borders>
+<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+<cellXfs count="15">
+<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>
+<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/>
+<xf numFmtId="0" fontId="3" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
+<xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyFont="1"/>
+<xf numFmtId="0" fontId="5" fillId="0" borderId="0" xfId="0" applyFont="1"/>
+<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>
+<xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>
+<xf numFmtId="166" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>
+<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment wrapText="0"/></xf>
+<xf numFmtId="0" fontId="6" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1"/>
+<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
+<xf numFmtId="0" fontId="3" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment horizontal="right"/></xf>
+<xf numFmtId="164" fontId="4" fillId="0" borderId="0" xfId="0" applyFont="1" applyNumberFormat="1"/>
+<xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFill="1"/>
+</cellXfs>
+<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>`;
+  const xe = s => String(s).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const colL = i => { let s = ''; i++; while (i) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; };
+  // cell: null | string | number | {v, s, link} ; link = 'https://...' or '#Sheet!A1'
+  function sheetXml(sh) {
+    const rows = sh.rows.map((row, ri) => {
+      const cells = (row || []).map((c, ci) => {
+        if (c == null || c === '') return '';
+        const o = typeof c === 'object' ? c : {v: c};
+        if (o.v == null || o.v === '') return o.s ? `<c r="${colL(ci)}${ri + 1}" s="${o.s}"/>` : '';
+        const ref = `${colL(ci)}${ri + 1}`, s = o.s != null ? ` s="${o.s}"` : (o.link ? ` s="${ST.link}"` : '');
+        if (o.link) {
+          const target = o.link.startsWith('#') ? o.link : o.link;
+          return `<c r="${ref}"${s} t="str"><f>${xe(`HYPERLINK("${target.replace(/"/g, '""')}","${String(o.v).replace(/"/g, '""')}")`)}</f><v>${xe(o.v)}</v></c>`;
+        }
+        if (typeof o.v === 'number' && isFinite(o.v)) return `<c r="${ref}"${s}><v>${o.v}</v></c>`;
+        return `<c r="${ref}"${s} t="inlineStr"><is><t xml:space="preserve">${xe(o.v)}</t></is></c>`;
+      }).join('');
+      return cells ? `<row r="${ri + 1}">${cells}</row>` : '';
+    }).join('');
+    const pane = sh.freeze ? `<pane ${sh.freeze.col ? `xSplit="${sh.freeze.col}" ` : ''}${sh.freeze.row ? `ySplit="${sh.freeze.row}" ` : ''}topLeftCell="${colL(sh.freeze.col || 0)}${(sh.freeze.row || 0) + 1}" activePane="${sh.freeze.row && sh.freeze.col ? 'bottomRight' : sh.freeze.row ? 'bottomLeft' : 'topRight'}" state="frozen"/>` : '';
+    const cols = sh.cols ? `<cols>${sh.cols.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join('')}</cols>` : '';
+    const af = sh.autofilter ? `<autoFilter ref="${sh.autofilter}"/>` : '';
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetPr>${sh.tab ? `<tabColor rgb="${sh.tab}"/>` : ''}<pageSetUpPr fitToPage="1"/></sheetPr><sheetViews><sheetView workbookViewId="0"${sh.grid === false ? ' showGridLines="0"' : ''}>${pane}</sheetView></sheetViews><sheetFormatPr defaultRowHeight="13"/>${cols}<sheetData>${rows}</sheetData>${af}<pageMargins left="0.5" right="0.5" top="0.6" bottom="0.6" header="0.3" footer="0.3"/><pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0"/></worksheet>`;
+  }
+  async function writeXlsx(JSZip, sheets) {
+    const z = new JSZip();
+    z.file('[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>`);
+    z.file('_rels/.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`);
+    const names = sheets.map((s, i) => s.autofilter ? `<definedName name="_xlnm._FilterDatabase" localSheetId="${i}" hidden="1">'${xe(s.name.replace(/'/g, "''"))}'!$${s.autofilter.replace(':', ':$').replace(/([A-Z]+)(\d+)/g, '$1$$$2')}</definedName>` : '').join('');
+    z.file('xl/workbook.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><bookViews><workbookView activeTab="0"/></bookViews><sheets>${sheets.map((s, i) => `<sheet name="${xe(s.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets>${names ? `<definedNames>${names}</definedNames>` : ''}<calcPr calcId="191029" fullCalcOnLoad="1"/></workbook>`);
+    z.file('xl/_rels/workbook.xml.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}<Relationship Id="rId${sheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`);
+    z.file('xl/styles.xml', STYLES);
+    sheets.forEach((s, i) => z.file(`xl/worksheets/sheet${i + 1}.xml`, sheetXml(s)));
+    return z.generateAsync({type: 'arraybuffer', compression: 'DEFLATE'});
+  }
+
+  /* --- workbook content --- */
+  const MONS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const dShort = s => { if (!s) return ''; const [y, m, d] = String(s).slice(0, 10).split('-'); return `${+d} ${MONS[+m - 1]} ${y}`; };
+  const LINES = [['revenue'], ['ebitda'], ['ebitda_margin'], ['ebitdaal'], ['operating_income'], ['net_income'], ['capex'], ['capex_intensity'], ['cfo'], ['fcf'], ['dividends_paid'],
+    ['cash'], ['gross_debt'], ['lease_liabilities'], ['net_debt'], ['net_leverage'], ['net_leverage_calc'], ['interest_expense'], ['interest_coverage']].map(a => a[0]);
+  const fmtStyle = u => u === 'x' ? ST.x : u === 'pct' ? ST.pct : ST.m;
+  const sheetName = (n, used) => { let b = String(n).replace(/[\[\]:*?\/\\]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 31) || 'Tenant', s = b, k = 2; while (used.has(s.toLowerCase())) s = b.slice(0, 28) + ' ' + k++; used.add(s.toLowerCase()); return s; };
+  const latestRatings = id => { const by = {}; RATINGS.filter(r => r[0] === id).forEach(r => { if (!by[r[1]] || String(r[4] || '') > String(by[r[1]][4] || '')) by[r[1]] = r; }); return by; };
+  const nextEvent = id => { const t = new Date().toISOString().slice(0, 10); return EVENTS.filter(e => e[1] === id && e[7] === 'expected' && (e[5] || e[4]) >= t).sort((a, b) => String(a[5] || a[4]).localeCompare(String(b[5] || b[4])))[0]; };
+  // grid of one company: metrics down, periods across, one basis per metric (the one covering most periods)
+  function grid(id, annual, maxCols) {
+    const rows = ROWS.filter(r => r.co === id && DEF[r.metric] && r.value != null && (annual ? r.period === 'FY' : r.period !== 'FY' && r.ptype !== 'ytd' && r.ptype !== 'ltm'));
+    const ends = [...new Set(rows.map(r => r.end))].sort().slice(-maxCols);
+    const label = {}; rows.forEach(r => { if (ends.includes(r.end)) label[r.end] = annual ? 'FY' + String(r.end).slice(0, 4) : `${r.period} ${String(r.end).slice(0, 4)}`; });
+    const out = [];
+    LINES.forEach(metric => {
+      const rs = rows.filter(r => r.metric === metric && ends.includes(r.end)); if (!rs.length) return;
+      const cnt = {}; rs.forEach(r => cnt[r.basis] = (cnt[r.basis] || 0) + 1);
+      const order = ['reported', 'adjusted', 'calculated', 'organic', 'pro_forma'];
+      const basis = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a] || order.indexOf(a) - order.indexOf(b))[0];
+      const vals = ends.map(e => { const hit = rs.find(r => r.end === e && r.basis === basis) || rs.find(r => r.end === e); return hit ? {v: hit.value, ann: !!hit.annualized, other: hit.basis !== basis} : null; });
+      out.push({metric, basis, vals});
+    });
+    return {ends, label, lines: out};
+  }
+
+  function buildSheets() {
+    const used = new Set(['cover', 'data', 'sources']);
+    const tenants = COMPANIES.slice().sort((a, b) => a.name.localeCompare(b.name));
+    const tabOf = Object.fromEntries(tenants.map(c => [c.id, sheetName(c.name, used)]));
+    const filt = [flt.regions.size ? 'Region: ' + [...flt.regions].join(', ') : '', flt.country ? 'Country: ' + flt.country : '', flt.types.size ? 'Type: ' + [...flt.types].join(', ') : ''].filter(Boolean).join(' | ') || 'All tenants (no filter)';
+    const ids = new Set(tenants.map(c => c.id));
+    let figures = 0;
+
+    // tenant tabs
+    const tenantSheets = tenants.map(c => {
+      const R = [], rat = latestRatings(c.id), ne = nextEvent(c.id), ccy = c.ccy || '';
+      R.push([{v: c.name, s: ST.title}]);
+      R.push([{v: [c.legal, c.ticker ? 'Ticker ' + c.ticker : '', TYPE(c)].filter(Boolean).join('  |  '), s: ST.sub}]);
+      R.push([{v: '<< Back to cover', link: "#'Cover'!A1"}]);
+      R.push([]);
+      R.push([{v: 'Profile', s: ST.section}, {v: '', s: ST.section}, {v: '', s: ST.section}, {v: '', s: ST.section}]);
+      const ir = (IR[c.id] || [])[0] || c.ir;
+      [['Sector', c.sector], ['Reporting currency', ccy ? ccy + ' (figures in millions)' : ''], ['Fiscal year end', c.fye ? dShort('2000-' + c.fye).replace(' 2000', '') : ''], ['Reporting', c.freq],
+       ['Next results', ne ? `${ne[3]} ${ne[2]}: ${dShort(ne[5] || ne[4])}${ne[5] ? ' (confirmed)' : ' (expected)'}` : 'Not scheduled yet']].forEach(([k, v]) => R.push([{v: k, s: ST.bold}, v || '']));
+      if (ir) R.push([{v: 'Investor relations', s: ST.bold}, {v: ir, link: ir}]);
+      R.push([]);
+      const ops = COUNTRIES.filter(x => x[0] === c.id);
+      if (ops.length) {
+        R.push([{v: 'Operations', s: ST.section}, {v: '', s: ST.section}, {v: '', s: ST.section}, {v: '', s: ST.section}]);
+        R.push([{v: 'Country', s: ST.head}, {v: 'Brand', s: ST.head}, {v: 'Region', s: ST.head}, {v: 'Business', s: ST.head}]);
+        ops.forEach(x => R.push([x[1], x[2] || '', REGION[x[1]] || '', x[3] || '']));
+        R.push([]);
+      }
+      R.push([{v: 'Credit ratings', s: ST.section}, {v: '', s: ST.section}, {v: '', s: ST.section}, {v: '', s: ST.section}, {v: '', s: ST.section}, {v: '', s: ST.section}]);
+      R.push([{v: 'Agency', s: ST.head}, {v: 'Rating', s: ST.head}, {v: 'Outlook', s: ST.head}, {v: 'Date', s: ST.head}, {v: 'Source', s: ST.head}, {v: 'Last action', s: ST.head}]);
+      const ags = ['S&P', "Moody's", 'Fitch'].filter(a => rat[a]);
+      if (ags.length) ags.forEach(a => { const r = rat[a]; R.push([a, {v: r[2], s: ST.bold}, r[3] || '', dShort(r[4]), r[7] ? {v: 'Link', link: r[7]} : '', r[5] || '']); });
+      else R.push([{v: 'No public rating found', s: ST.note}]);
+      R.push([]);
+      let notesAnn = false, notesOther = false;
+      const block = (title, g) => {
+        if (!g.ends.length) return;
+        R.push([{v: title, s: ST.section}, ...Array(g.ends.length + 1).fill({v: '', s: ST.section})]);
+        R.push([{v: ccy ? `${ccy} m` : '', s: ST.head}, {v: 'Basis', s: ST.head}, ...g.ends.map(e => ({v: g.label[e], s: ST.headR}))]);
+        R.push([{v: '', s: ST.note}, {v: '', s: ST.note}, ...g.ends.map(e => ({v: dShort(e), s: ST.note}))]);
+        g.lines.forEach((ln, i) => {
+          const d = DEF[ln.metric], st = fmtStyle(d.unit);
+          R.push([{v: d.label + (ln.vals.some(v => v && v.ann) ? ' †' : ''), s: ['revenue', 'ebitda', 'net_debt', 'net_leverage'].includes(ln.metric) ? ST.bold : null}, {v: ln.basis, s: ST.note},
+            ...ln.vals.map(v => { if (!v) return null; figures++; if (v.ann) notesAnn = true; if (v.other) notesOther = true; return {v: v.v, s: st}; })]);
+        });
+        R.push([]);
+      };
+      block('Annual financials', grid(c.id, true, 5));
+      block('Interim financials', grid(c.id, false, 6));
+      if (notesAnn) R.push([{v: '† Some interim leverage figures use annualized EBITDA (latest quarter x 4).', s: ST.note}]);
+      if (notesOther) R.push([{v: 'Where a period lacks the row basis, the figure on another basis is shown; see the Data tab for every figure and its source.', s: ST.note}]);
+      R.push([{v: 'Ratings marked (unverified) were found by automated search and not yet checked against the agency.', s: ST.note}]);
+      return {name: tabOf[c.id], rows: R, cols: [26, 13, 14, 13, 13, 13, 13, 13], grid: false, tab: 'FF2F7FC1'};
+    });
+
+    // cover
+    const C = [];
+    C.push([{v: 'Tenant credit monitor', s: ST.title}]);
+    C.push([{v: 'Credit profiles from public filings, releases and agency ratings', s: ST.sub}]);
+    C.push([]);
+    [['Scope', filt], ['Tenants', tenants.length], ['Data as of', dShort(SNAPSHOT)], ['Exported', dShort(new Date().toISOString())]].forEach(([k, v]) => C.push([{v: k, s: ST.bold}, v]));
+    C.push([]);
+    C.push([{v: 'Tenants', s: ST.section}, ...Array(13).fill({v: '', s: ST.section})]);
+    C.push(['Tenant', 'Type', 'Countries', 'S&P', "Moody's", 'Fitch', 'Ccy', 'Latest FY', 'Revenue (m)', 'EBITDA (m)', 'EBITDA margin', 'Net debt (m)', 'Net leverage', 'Next results'].map((h, i) => ({v: h, s: i >= 8 && i <= 12 ? ST.headR : ST.head})));
+    tenants.forEach((c, i) => {
+      const rat = latestRatings(c.id), g = grid(c.id, true, 1), e = g.ends[0];
+      const pick = (...ms) => { for (const m of ms) { const l = g.lines.find(x => x.metric === m); if (l && l.vals[0]) return l.vals[0].v; } return null; };
+      const ne = nextEvent(c.id);
+      C.push([{v: c.name, link: `#'${tabOf[c.id].replace(/'/g, "''")}'!A1`}, TYPE(c), coCountries(c.id).join(', '),
+        (rat['S&P'] || [])[2] || '', (rat["Moody's"] || [])[2] || '', (rat.Fitch || [])[2] || '', c.ccy || '', e ? 'FY' + e.slice(0, 4) : '',
+        {v: pick('revenue'), s: ST.m}, {v: pick('ebitda'), s: ST.m}, {v: pick('ebitda_margin'), s: ST.pct}, {v: pick('net_debt'), s: ST.m}, {v: pick('net_leverage', 'net_leverage_calc'), s: ST.x},
+        ne ? dShort(ne[5] || ne[4]) : '']);
+    });
+    C.push([]);
+    const byCountry = {}; COUNTRIES.filter(x => ids.has(x[0]) && (!flt.country || x[1] === flt.country) && (!flt.regions.size || flt.regions.has(REGION[x[1]]))).forEach(x => (byCountry[x[1]] ||= []).push(x));
+    const countries = Object.keys(byCountry).sort();
+    if (countries.length) {
+      C.push([{v: 'By country', s: ST.section}, ...Array(13).fill({v: '', s: ST.section})]);
+      C.push([{v: 'Country', s: ST.head}, {v: 'Region', s: ST.head}, {v: 'Tenants (brand)', s: ST.head}, ...Array(11).fill({v: '', s: ST.head})]);
+      countries.forEach(k => C.push([{v: k, s: ST.bold}, REGION[k] || '', byCountry[k].map(x => `${(CO[x[0]] || {}).name || x[0]}${x[2] ? ' (' + x[2] + ')' : ''}`).join('; ')]));
+      C.push([]);
+    }
+    C.push([{v: 'Notes', s: ST.section}, ...Array(13).fill({v: '', s: ST.section})]);
+    ['Amounts are in millions of each company\'s reporting currency; multiples (x) and margins (%) as shown.',
+     'Basis: reported = IFRS/GAAP; adjusted = company-defined measure (e.g. adjusted EBITDA); calculated = derived from other figures.',
+     'Net leverage is the company-stated net debt / EBITDA where disclosed, otherwise calculated as net debt / FY EBITDA.',
+     'Ratings are long-term issuer ratings. Entries marked (unverified) came from automated search.',
+     'Every figure with its period, basis and source link is in the Data tab.'].forEach(t => C.push([{v: t, s: ST.note}]));
+    const cover = {name: 'Cover', rows: C, cols: [26, 13, 40, 7, 8, 7, 6, 9, 12, 12, 13, 13, 12, 13], grid: false, tab: 'FF1F3B57'};
+
+    // data + sources
+    const PT = {fy: 'Full year', quarter: 'Quarter', half: 'Half year', ytd: 'Year to date', ltm: 'LTM', point: 'Point in time'};
+    const hdr = ['Company', 'Category', 'Metric', 'Period', 'Period type', 'Period end', 'Value', 'Unit', 'Currency', 'Basis', 'Method', 'Note', 'Source', 'Source URL'];
+    const D = [hdr.map(h => ({v: h, s: ST.head}))];
+    const srcIds = new Set();
+    ROWS.filter(r => ids.has(r.co) && DEF[r.metric]).sort((a, b) => (CO[a.co] || {name: a.co}).name.localeCompare((CO[b.co] || {name: b.co}).name) || LINES.indexOf(a.metric) - LINES.indexOf(b.metric) || String(a.end).localeCompare(String(b.end)))
+      .forEach(r => { const d = DEF[r.metric], src = SOURCES[r.src] || []; if (r.src) srcIds.add(r.src);
+        D.push([(CO[r.co] || {}).name || r.co, CATS[d.cat] || d.cat, d.label, r.period || '', PT[r.ptype] || r.ptype || '', r.end || '', r.value == null ? null : {v: r.value, s: fmtStyle(d.unit)}, d.unit, d.unit === 'm' ? (CO[r.co] || {}).ccy || '' : '', r.basis || '', r.method || '',
+          [r.annualized ? 'Annualized EBITDA (quarter x 4)' : '', r.note || ''].filter(Boolean).join('. '), src[0] || r.src || '', src[1] ? {v: src[1], link: src[1]} : '']); });
+    const data = {name: 'Data', rows: D, cols: [22, 12, 24, 7, 12, 11, 12, 6, 8, 11, 12, 36, 40, 44], freeze: {row: 1}, autofilter: `A1:${colL(hdr.length - 1)}${D.length}`, tab: 'FF9CA3AF'};
+    const S = [[{v: 'Source ID', s: ST.head}, {v: 'Document', s: ST.head}, {v: 'Link', s: ST.head}]];
+    [...srcIds].sort().forEach(k => { const s = SOURCES[k] || []; S.push([k, s[0] || '', s[1] ? {v: s[1], link: s[1]} : '']); });
+    const sources = {name: 'Sources', rows: S, cols: [28, 60, 60], freeze: {row: 1}, tab: 'FF9CA3AF'};
+    return {sheets: [cover, ...tenantSheets, data, sources], tenants: tenants.length, figures: D.length - 1};
+  }
+
   btn.addEventListener('click', async () => {
     if (!dl) return;
     btn.disabled = true; say('Preparing workbook...');
     try {
-      const X = await loadXlsx();
-      const ids = new Set(COMPANIES.map(c => c.id));
-      const nm = id => (CO[id] || {}).name || id;
-      const filt = [flt.regions.size ? 'Region: ' + [...flt.regions].join(', ') : '', flt.country ? 'Country: ' + flt.country : '', flt.types.size ? 'Type: ' + [...flt.types].join(', ') : ''].filter(Boolean).join('; ') || 'None (all tenants)';
-      const readme = [['Tenant credit monitor export'], [], ['Data as of', SNAPSHOT], ['Exported', new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC'], ['Filters', filt], ['Tenants', COMPANIES.length], [],
-        ['Notes'], ['Amounts in millions of the company reporting currency unless the unit says x (multiple) or pct (percent).'],
-        ['Basis: reported = IFRS/GAAP; adjusted = company-defined (APM); calculated = derived in the database or on the dashboard (see Formula/Note).'],
-        ['Net leverage (calc.) is computed on the dashboard: net debt / FY EBITDA, or trailing-twelve-month EBITDA for quarters; rows marked annualized use the latest quarter x 4.'],
-        ['Ratings marked (unverified) were found by automated search and not yet checked against the agency.']];
-      const companies = [['Company ID', 'Company', 'Legal name', 'Ticker', 'Type', 'Sector', 'Countries', 'Currency', 'Fiscal year end', 'Reporting', 'IR site']]
-        .concat(COMPANIES.map(c => [c.id, c.name, c.legal || '', c.ticker || '', TYPE(c), c.sector || '', coCountries(c.id).join(', '), c.ccy || '', c.fye || '', c.freq || '', (IR[c.id] || [])[0] || c.ir || '']));
-      const PT = {fy: 'Full year', quarter: 'Quarter', half: 'Half year', ytd: 'Year to date', ltm: 'LTM', point: 'Point in time'};
-      const metrics = [['Company ID', 'Company', 'Category', 'Metric', 'Period', 'Period type', 'Period end', 'Value', 'Unit', 'Currency', 'Basis', 'Method', 'Note', 'Source', 'Source URL']]
-        .concat(ROWS.filter(r => ids.has(r.co) && DEF[r.metric])
-          .sort((a, b) => a.co.localeCompare(b.co) || a.metric.localeCompare(b.metric) || String(a.end).localeCompare(String(b.end)))
-          .map(r => { const d = DEF[r.metric], src = SOURCES[r.src] || [];
-            return [r.co, nm(r.co), CATS[d.cat] || d.cat, d.label, r.period || '', PT[r.ptype] || r.ptype || '', r.end || '', r.value, d.unit, d.unit === 'm' ? (CO[r.co] || {}).ccy || '' : '', r.basis || '', r.method || '',
-              [r.annualized ? 'Annualized EBITDA (quarter x 4)' : '', r.note || ''].filter(Boolean).join('. '), src[0] || r.src || '', src[1] || '']; }));
-      const ratings = [['Company ID', 'Company', 'Agency', 'Rating', 'Outlook', 'Date', 'Last action', 'Previous rating', 'Source URL']]
-        .concat(RATINGS.filter(r => ids.has(r[0])).map(r => [r[0], nm(r[0]), r[1], r[2], r[3] || '', r[4] || '', r[5] || '', r[6] || '', r[7] || '']));
-      const calendar = [['Event ID', 'Company ID', 'Company', 'Fiscal year', 'Period', 'Expected date', 'Confirmed date', 'Published', 'Status', 'Link']]
-        .concat(EVENTS.filter(e => ids.has(e[1])).sort((a, b) => String(a[4]).localeCompare(String(b[4]))).map(e => [e[0], e[1], nm(e[1]), e[2], e[3], e[4] || '', e[5] || '', e[6] || '', e[7] || '', e[8] || '']));
-      const wb = X.utils.book_new();
-      const sheet = (rows, name, widths) => { const ws = X.utils.aoa_to_sheet(rows); ws['!cols'] = widths.map(w => ({wch: w})); if (rows.length > 1) ws['!autofilter'] = {ref: X.utils.encode_range({s: {r: 0, c: 0}, e: {r: rows.length - 1, c: rows[0].length - 1}})}; X.utils.book_append_sheet(wb, ws, name); };
-      const rm = X.utils.aoa_to_sheet(readme); rm['!cols'] = [{wch: 16}, {wch: 60}]; X.utils.book_append_sheet(wb, rm, 'Read me');
-      sheet(companies, 'Companies', [11, 24, 30, 9, 13, 30, 30, 8, 12, 18, 40]);
-      sheet(metrics, 'Metrics', [11, 22, 14, 24, 7, 13, 11, 12, 6, 8, 11, 13, 40, 40, 40]);
-      sheet(ratings, 'Ratings', [11, 22, 9, 8, 14, 11, 30, 14, 40]);
-      sheet(calendar, 'Calendar', [18, 11, 22, 10, 7, 13, 14, 11, 11, 40]);
-      const buf = X.write(wb, {type: 'array', bookType: 'xlsx'});
+      const JSZip = await loadZip();
+      const wb = buildSheets();
+      const buf = await writeXlsx(JSZip, wb.sheets);
       if (window.claude) say('Waiting for you to confirm the download...');
-      await dl.save({filename: `tenant-credit-${SNAPSHOT || 'export'}.xlsx`, data: buf});
-      say(`Saved: ${COMPANIES.length} tenants, ${metrics.length - 1} figures.`);
+      const tag = flt.country ? '-' + flt.country.toLowerCase().replace(/[^a-z0-9]+/g, '-') : (wb.tenants === 1 ? '-' + COMPANIES[0].name.toLowerCase().replace(/[^a-z0-9]+/g, '-') : '');
+      await dl.save({filename: `tenant-credit${tag}-${SNAPSHOT || 'export'}.xlsx`, data: buf});
+      say(`Saved: ${wb.tenants} tenants, ${wb.figures} figures.`);
     } catch (e) {
       const c = e && e.code;
       say(c === 'declined' ? 'Download cancelled.' : c === 'rate_limited' ? 'A download prompt is already open.' : ['unavailable', 'not_granted', 'capability_disabled', 'capability_removed'].includes(c) ? 'Downloads are not available in this view.' : 'Export failed: ' + ((e && e.message) || 'unknown error'));
