@@ -159,6 +159,18 @@ section{scroll-margin-top:150px}
 .fmeta{margin-left:auto;display:flex;align-items:center;gap:12px;font-size:.85rem;color:var(--muted)}
 .fmeta button{font:inherit;font-size:.85rem;background:none;border:1px solid var(--line);border-radius:7px;padding:4px 10px;color:var(--ink);cursor:pointer}
 .fmeta button[disabled]{opacity:.4;cursor:default}
+.srch{position:relative}
+.srch input{font:inherit;font-size:.9rem;width:230px;max-width:60vw;padding:6px 10px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--ink)}
+.sres{position:absolute;top:calc(100% + 4px);left:0;z-index:9;width:min(340px,calc(100vw - 48px));background:var(--panel);border:1px solid var(--line);border-radius:9px;box-shadow:0 8px 24px rgba(0,0,0,.14);padding:4px;list-style:none;margin:0}
+.sres li{display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:6px;font-size:.88rem;cursor:pointer}
+.sres li[aria-selected="true"],.sres li:hover{background:var(--soft)}
+.sres small{margin-left:auto;color:var(--muted);font-size:.76rem;white-space:nowrap}
+.xwrap{position:relative}
+.xmenu{position:absolute;top:calc(100% + 6px);right:0;z-index:9;width:min(320px,calc(100vw - 48px));background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.14);padding:12px;color:var(--ink);font-size:.88rem}
+.xmenu h5{margin:0 0 8px;font-size:.86rem}
+.xmenu label.opt{display:flex;gap:8px;align-items:flex-start;padding:6px 0;cursor:pointer}
+.xmenu select{font:inherit;font-size:.86rem;width:100%;margin-top:4px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink)}
+.xmenu .go{margin-top:10px;width:100%;font:inherit;font-weight:600;padding:8px;border:0;border-radius:7px;background:var(--ink);color:var(--panel);cursor:pointer}
 .fmsg{font-size:.82rem;color:var(--muted,inherit)}
 @media (max-width:700px){.filters{position:static}.fmeta{margin-left:0}}
 #tip{position:fixed;z-index:10;pointer-events:none;background:var(--ink);color:var(--panel);font-size:.82rem;line-height:1.4;padding:8px 10px;border-radius:6px;max-width:280px;opacity:0;transition:opacity .12s}
@@ -176,7 +188,8 @@ section{scroll-margin-top:150px}
     <div class="fgroup"><span class="flabel">Region</span><div class="chips" id="f-region"></div></div>
     <div class="fgroup"><span class="flabel">Country</span><select id="f-country" aria-label="Country"></select></div>
     <div class="fgroup"><span class="flabel">Type</span><div class="chips" id="f-type"></div></div>
-    <div class="fmeta"><span id="f-count"></span><button id="f-reset" type="button">Clear filters</button><button id="f-export" type="button" hidden title="Download the tenants in the current filter as an Excel workbook">Export to Excel</button><span id="f-export-msg" class="fmsg" role="status"></span></div>
+    <div class="fgroup srch"><span class="flabel">Search</span><input type="search" id="f-search" placeholder="Tenant, brand or country" aria-label="Search tenants, brands and countries" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="f-results"><ul class="sres" id="f-results" role="listbox" hidden></ul></div>
+    <div class="fmeta"><span id="f-count"></span><button id="f-reset" type="button">Clear filters</button><span class="xwrap"><button id="f-export" type="button" hidden aria-expanded="false" aria-controls="xmenu" title="Download an Excel workbook for one tenant, one country or the current view">Export to Excel &#9662;</button><div class="xmenu" id="xmenu" hidden></div></span><span id="f-export-msg" class="fmsg" role="status"></span></div>
     <nav class="jump" aria-label="Jump to section"><a href="#sec-ratings">Ratings</a><a href="#sec-cal">Calendar</a><a href="#sec-compare">Compare</a><a href="#sec-trends">Trends</a><a href="#sec-lvr">Leverage vs rating</a><a href="#sec-fcf">Cash flow</a><a href="#sec-mix">Revenue mix</a><a href="#sec-expo">Exposure</a><a href="#sec-company">Company detail</a></nav>
   </div>
 
@@ -3074,6 +3087,47 @@ function applyFilters() {
   applyFilters();
 })();
 
+/* ---------- Search: tenants, brands, countries ---------- */
+(function initSearch() {
+  const inp = $('#f-search'), ul = $('#f-results');
+  let items = [], sel = -1;
+  const norm = t => String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  function find(q) {
+    q = norm(q).trim(); if (!q) return [];
+    const out = [];
+    ALL_COMPANIES.forEach(c => { if ([c.name, c.legal, c.ticker].some(t => norm(t).includes(q))) out.push({t: 'co', id: c.id, label: c.name, hint: TYPE(c), rank: norm(c.name).startsWith(q) ? 0 : 1}); });
+    COUNTRIES.forEach(x => { if (CO[x[0]] && x[2] && norm(x[2]).includes(q) && !out.some(o => o.t === 'co' && o.id === x[0])) out.push({t: 'co', id: x[0], label: CO[x[0]].name, hint: `${x[2]}, ${x[1]}`, rank: 2}); });
+    [...new Set(COUNTRIES.map(x => x[1]))].forEach(k => { if (norm(k).includes(q)) out.push({t: 'cty', id: k, label: k, hint: `Country, ${new Set(COUNTRIES.filter(x => x[1] === k && CO[x[0]]).map(x => x[0])).size} tenants`, rank: norm(k).startsWith(q) ? 0 : 1}); });
+    return out.sort((a, b) => a.rank - b.rank || a.label.localeCompare(b.label)).slice(0, 9);
+  }
+  function show() {
+    items = find(inp.value); sel = items.length ? 0 : -1;
+    ul.innerHTML = items.map((o, i) => `<li role="option" data-i="${i}" aria-selected="${i === sel}">${o.t === 'co' ? `<span class="dot" style="background:${color(o.id)}"></span>` : '&#127760;'} ${esc(o.label)}<small>${esc(o.hint)}</small></li>`).join('') || (inp.value.trim() ? '<li aria-disabled="true"><span class="nd">No match</span></li>' : '');
+    ul.hidden = !inp.value.trim(); inp.setAttribute('aria-expanded', !ul.hidden);
+    ul.querySelectorAll('li[data-i]').forEach(li => li.addEventListener('mousedown', e => { e.preventDefault(); go(items[+li.dataset.i]); }));
+  }
+  function go(o) {
+    if (!o) return;
+    inp.value = ''; ul.hidden = true; inp.setAttribute('aria-expanded', false);
+    if (o.t === 'cty') {
+      flt.country = o.id; if (flt.regions.size && !flt.regions.has(REGION[o.id])) flt.regions.clear();
+      renderFilterControls(); applyFilters(); saveFilters();
+      $('#sec-ratings').scrollIntoView({behavior: 'smooth'});
+      return;
+    }
+    if (!VIS.has(o.id)) { flt.regions.clear(); flt.types.clear(); flt.country = ''; renderFilterControls(); applyFilters(); saveFilters(); }
+    activeCo = o.id; renderTabs(); drawCompany();
+    $('#sec-company').scrollIntoView({behavior: 'smooth'});
+  }
+  inp.addEventListener('input', show);
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { if (!items.length) return; e.preventDefault(); sel = (sel + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length; ul.querySelectorAll('li[data-i]').forEach(li => li.setAttribute('aria-selected', +li.dataset.i === sel)); }
+    else if (e.key === 'Enter') { e.preventDefault(); go(items[sel]); }
+    else if (e.key === 'Escape') { inp.value = ''; ul.hidden = true; }
+  });
+  inp.addEventListener('blur', () => setTimeout(() => { ul.hidden = true; }, 120));
+})();
+
 /* ---------- Export: workbook of the tenants in the current filter ---------- */
 (function initExport() {
   const btn = $('#f-export'), msg = $('#f-export-msg');
@@ -3194,11 +3248,11 @@ function applyFilters() {
     return {ends, label, lines: out};
   }
 
-  function buildSheets() {
+  function buildSheets(scope) {
     const used = new Set(['cover', 'data', 'sources']);
-    const tenants = COMPANIES.slice().sort((a, b) => a.name.localeCompare(b.name));
+    const tenants = scope.cos.slice().sort((a, b) => a.name.localeCompare(b.name));
     const tabOf = Object.fromEntries(tenants.map(c => [c.id, sheetName(c.name, used)]));
-    const filt = [flt.regions.size ? 'Region: ' + [...flt.regions].join(', ') : '', flt.country ? 'Country: ' + flt.country : '', flt.types.size ? 'Type: ' + [...flt.types].join(', ') : ''].filter(Boolean).join(' | ') || 'All tenants (no filter)';
+    const filt = scope.label;
     const ids = new Set(tenants.map(c => c.id));
     let figures = 0;
 
@@ -3284,7 +3338,7 @@ function applyFilters() {
         ne ? dShort(ne[5] || ne[4]) : '']);
     });
     C.push([]);
-    const byCountry = {}; COUNTRIES.filter(x => ids.has(x[0]) && (!flt.country || x[1] === flt.country) && (!flt.regions.size || flt.regions.has(REGION[x[1]]))).forEach(x => (byCountry[x[1]] ||= []).push(x));
+    const byCountry = {}; COUNTRIES.filter(x => ids.has(x[0]) && (scope.kind === 'tenant' || (scope.country ? x[1] === scope.country : (!flt.country || x[1] === flt.country) && (!flt.regions.size || flt.regions.has(REGION[x[1]]))))).forEach(x => (byCountry[x[1]] ||= []).push(x));
     const countries = Object.keys(byCountry).sort();
     if (countries.length) {
       C.push([{v: 'By country', s: ST.section}, ...Array(13).fill({v: '', s: ST.section})]);
@@ -3316,23 +3370,54 @@ function applyFilters() {
     return {sheets: [cover, ...tenantSheets, data, sources], tenants: tenants.length, figures: D.length - 1};
   }
 
-  btn.addEventListener('click', async () => {
+  const xm = $('#xmenu');
+  const slug = t => String(t).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const viewLabel = () => [flt.regions.size ? 'Region: ' + [...flt.regions].join(', ') : '', flt.country ? 'Country: ' + flt.country : '', flt.types.size ? 'Type: ' + [...flt.types].join(', ') : ''].filter(Boolean).join(' | ') || 'All tenants (no filter)';
+  let xkind = 'tenant';
+  function menu() {
+    const cos = ALL_COMPANIES.slice().sort((a, b) => a.name.localeCompare(b.name));
+    const ctys = [...new Set(COUNTRIES.filter(x => CO[x[0]]).map(x => x[1]))].sort();
+    const cur = CO[activeCo] ? activeCo : (COMPANIES[0] || {}).id;
+    const curC = flt.country || ctys[0];
+    xm.innerHTML = `<h5>What to export</h5>
+      <label class="opt"><input type="radio" name="xk" value="tenant"${xkind === 'tenant' ? ' checked' : ''}><span style="flex:1">One tenant<select id="x-co" aria-label="Tenant to export">${cos.map(c => `<option value="${c.id}"${c.id === cur ? ' selected' : ''}>${esc(c.name)}</option>`).join('')}</select></span></label>
+      <label class="opt"><input type="radio" name="xk" value="country"${xkind === 'country' ? ' checked' : ''}><span style="flex:1">One country (all tenants operating there)<select id="x-cty" aria-label="Country to export">${ctys.map(k => `<option${k === curC ? ' selected' : ''}>${esc(k)}</option>`).join('')}</select></span></label>
+      <label class="opt"><input type="radio" name="xk" value="view"${xkind === 'view' ? ' checked' : ''}><span>Current view: ${COMPANIES.length} tenant${COMPANIES.length === 1 ? '' : 's'}<br><small class="nd">${esc(viewLabel())}</small></span></label>
+      <button type="button" class="go" id="x-go">Download workbook</button>`;
+    xm.querySelectorAll('input[name=xk]').forEach(r => r.addEventListener('change', () => { xkind = r.value; }));
+    $('#x-co').addEventListener('focus', () => { xkind = 'tenant'; xm.querySelector('input[value=tenant]').checked = true; });
+    $('#x-cty').addEventListener('focus', () => { xkind = 'country'; xm.querySelector('input[value=country]').checked = true; });
+    $('#x-go').addEventListener('click', run);
+  }
+  const openMenu = v => { xm.hidden = !v; btn.setAttribute('aria-expanded', v); if (v) menu(); };
+  btn.addEventListener('click', e => { e.stopPropagation(); openMenu(xm.hidden); });
+  xm.addEventListener('click', e => e.stopPropagation());
+  xm.addEventListener('keydown', e => { if (e.key === 'Escape') { openMenu(false); btn.focus(); } });
+  document.addEventListener('click', () => { if (!xm.hidden) openMenu(false); });
+  function scopeNow() {
+    if (xkind === 'tenant') { const c = CO[$('#x-co').value]; return {kind: 'tenant', cos: [c], label: 'Tenant: ' + c.name, tag: slug(c.name)}; }
+    if (xkind === 'country') { const k = $('#x-cty').value, ids = new Set(COUNTRIES.filter(x => x[1] === k).map(x => x[0])); return {kind: 'country', country: k, cos: ALL_COMPANIES.filter(c => ids.has(c.id)), label: 'Country: ' + k, tag: slug(k)}; }
+    return {kind: 'view', cos: COMPANIES.slice(), label: viewLabel(), tag: flt.country ? slug(flt.country) : (COMPANIES.length === ALL_COMPANIES.length ? 'all' : 'filtered')};
+  }
+  async function run() {
     if (!dl) return;
+    const scope = scopeNow();
+    openMenu(false);
+    if (!scope.cos.length) { say('Nothing to export for that choice.'); return; }
     btn.disabled = true; say('Preparing workbook...');
     try {
       const JSZip = await loadZip();
-      const wb = buildSheets();
+      const wb = buildSheets(scope);
       const buf = await writeXlsx(JSZip, wb.sheets);
       if (window.claude) say('Waiting for you to confirm the download...');
-      const tag = flt.country ? '-' + flt.country.toLowerCase().replace(/[^a-z0-9]+/g, '-') : (wb.tenants === 1 ? '-' + COMPANIES[0].name.toLowerCase().replace(/[^a-z0-9]+/g, '-') : '');
-      await dl.save({filename: `tenant-credit${tag}-${SNAPSHOT || 'export'}.xlsx`, data: buf});
-      say(`Saved: ${wb.tenants} tenants, ${wb.figures} figures.`);
+      await dl.save({filename: `tenant-credit-${scope.tag}-${SNAPSHOT || 'export'}.xlsx`, data: buf});
+      say(`Saved: ${wb.tenants} tenant${wb.tenants === 1 ? '' : 's'}, ${wb.figures} figures.`);
     } catch (e) {
       const c = e && e.code;
       say(c === 'declined' ? 'Download cancelled.' : c === 'rate_limited' ? 'A download prompt is already open.' : ['unavailable', 'not_granted', 'capability_disabled', 'capability_removed'].includes(c) ? 'Downloads are not available in this view.' : 'Export failed: ' + ((e && e.message) || 'unknown error'));
       if (['unavailable', 'not_granted', 'capability_disabled', 'capability_removed'].includes(c)) btn.hidden = true;
     } finally { btn.disabled = false; }
-  });
+  }
 })();
 }
 
